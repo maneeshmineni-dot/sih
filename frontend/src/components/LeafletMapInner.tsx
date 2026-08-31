@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { 
   MapContainer, 
   TileLayer, 
@@ -28,31 +28,58 @@ const normalizeLng = (lng: number): number => {
   return ((((lng + 180) % 360) + 360) % 360) - 180;
 };
 
-// Custom Vertex Marker Icon (Small circular amber/green draggable handle)
-const createVertexIcon = (index: number) => {
+// Custom Numbered Corner Pin (Leaflet divIcon)
+const createVertexIcon = (index: number, total: number) => {
   return L.divIcon({
     className: "custom-vertex-icon",
     html: `<div style="
-      width: 22px;
-      height: 22px;
+      width: 24px;
+      height: 24px;
       background: #4A5D43;
-      color: white;
+      color: #FEFEFA;
       border: 2px solid #FEFEFA;
       border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 10px;
-      font-weight: bold;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+      font-size: 11px;
+      font-weight: 800;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.4);
       cursor: grab;
+      transition: transform 0.15s ease;
     ">${index + 1}</div>`,
-    iconSize: [22, 22],
-    iconAnchor: [11, 11],
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
   });
 };
 
-// Animated Pinpoint Pointer Target Icon
+// Subtle Midpoint '+' Handle Icon for inserting boundary points
+const createMidpointIcon = () => {
+  return L.divIcon({
+    className: "custom-midpoint-icon",
+    html: `<div style="
+      width: 18px;
+      height: 18px;
+      background: #C18C5D;
+      color: #FFFFFF;
+      border: 1.5px solid #FFFFFF;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: bold;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      cursor: pointer;
+      opacity: 0.85;
+      transition: all 0.2s ease;
+    ">+</div>`,
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+  });
+};
+
+// Pinpoint Target Icon with Animated Radar Ping
 const createPinpointIcon = () => {
   return L.divIcon({
     className: "custom-pinpoint-icon",
@@ -144,17 +171,21 @@ function MapInteractionHandler({
   return null;
 }
 
+export type MapTileType = "hybrid" | "satellite" | "esri" | "topo" | "street";
+
 interface LeafletMapInnerProps {
   centerLat: number;
   centerLon: number;
   farmName: string;
   points: [number, number][];
-  mapType: "satellite" | "street";
+  mapType: MapTileType | string;
   areaAcres: number;
   isDrawing?: boolean;
   isPinpointMode?: boolean;
   pinpointLocation?: [number, number] | null;
   onVertexDrag: (index: number, newPos: [number, number]) => void;
+  onVertexDelete?: (index: number) => void;
+  onInsertMidpoint?: (insertIndex: number, coord: [number, number]) => void;
   onPinpointDrag?: (newPos: [number, number]) => void;
   onMapClick: (lat: number, lon: number) => void;
   onMoveFarmHere?: (lat: number, lon: number) => void;
@@ -171,11 +202,27 @@ export default function LeafletMapInner({
   isPinpointMode = false,
   pinpointLocation = null,
   onVertexDrag,
+  onVertexDelete,
+  onInsertMidpoint,
   onPinpointDrag,
   onMapClick,
   onMoveFarmHere,
 }: LeafletMapInnerProps) {
   const [hoverCoords, setHoverCoords] = useState<{ lat: number; lon: number } | null>(null);
+
+  // Compute Midpoints between adjacent vertices for 1-click vertex insertion
+  const midpoints = useMemo(() => {
+    if (points.length < 3 || isDrawing) return [];
+    const mids: { index: number; coord: [number, number] }[] = [];
+    for (let i = 0; i < points.length; i++) {
+      const p1 = points[i];
+      const p2 = points[(i + 1) % points.length];
+      const midLat = (p1[0] + p2[0]) / 2;
+      const midLon = (p1[1] + p2[1]) / 2;
+      mids.push({ index: i + 1, coord: [midLat, midLon] });
+    }
+    return mids;
+  }, [points, isDrawing]);
 
   return (
     <div className="relative w-full h-full">
@@ -183,7 +230,7 @@ export default function LeafletMapInner({
         center={[centerLat, normalizeLng(centerLon)]}
         zoom={16}
         minZoom={3}
-        maxZoom={20}
+        maxZoom={21}
         worldCopyJump={true}
         scrollWheelZoom={true}
         dragging={true}
@@ -199,12 +246,29 @@ export default function LeafletMapInner({
           onHoverCoords={(lat, lon) => setHoverCoords({ lat, lon })}
         />
 
-        {mapType === "satellite" ? (
+        {/* 1. Google Hybrid Satellite Tile Layer with Built-in Village & Road Labels */}
+        {mapType === "hybrid" || mapType === "satellite" ? (
+          <TileLayer
+            attribution='Imagery &copy; Google'
+            url="https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
+            maxZoom={22}
+            maxNativeZoom={20}
+            subdomains={["0", "1", "2", "3"]}
+          />
+        ) : mapType === "esri" ? (
           <TileLayer
             attribution='&copy; <a href="https://www.esri.com/">Esri World Imagery</a> & Sentinel-2'
             url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
             maxZoom={21}
             maxNativeZoom={18}
+          />
+        ) : mapType === "topo" ? (
+          <TileLayer
+            attribution='&copy; <a href="https://opentopomap.org">OpenTopoMap</a>'
+            url="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png"
+            maxZoom={18}
+            maxNativeZoom={17}
+            subdomains={["a", "b", "c"]}
           />
         ) : (
           <TileLayer
@@ -212,30 +276,31 @@ export default function LeafletMapInner({
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             maxZoom={21}
             maxNativeZoom={19}
+            subdomains={["a", "b", "c"]}
           />
         )}
 
-        {/* Polygon Boundary */}
+        {/* 2. Polygon Boundary Overlay */}
         {points.length > 2 && (
           <Polygon
             positions={points}
             pathOptions={{
-              color: "#16A34A",
-              weight: 3,
-              fillColor: "#4ADE80",
-              fillOpacity: 0.3,
+              color: "#4A5D43",
+              weight: 3.5,
+              fillColor: "#5D7052",
+              fillOpacity: 0.35,
               dashArray: "6, 6",
             }}
           />
         )}
 
-        {/* Draggable Polygon Vertex Pin Markers */}
+        {/* 3. Numbered Draggable Corner Markers */}
         {points.map((pt, idx) => (
           <Marker
             key={`vertex-${idx}-${pt[0].toFixed(5)}-${pt[1].toFixed(5)}`}
             position={pt}
             draggable={true}
-            icon={createVertexIcon(idx)}
+            icon={createVertexIcon(idx, points.length)}
             eventHandlers={{
               dragend: (e) => {
                 const marker = e.target;
@@ -245,20 +310,53 @@ export default function LeafletMapInner({
             }}
           >
             <Popup className="custom-popup" closeButton={false}>
-              <div className="p-1 text-center font-sans">
+              <div className="p-1.5 text-center font-sans space-y-1 min-w-[140px]">
                 <span className="font-bold text-xs text-[#2C2C24] block">Corner #{idx + 1}</span>
-                <span className="font-mono text-[10px] text-[#78786C] block">
+                <span className="font-mono text-[10px] text-[#78786C] block bg-[#F0EBE5] py-0.5 rounded-sm">
                   {pt[0].toFixed(5)}°N, {normalizeLng(pt[1]).toFixed(5)}°E
                 </span>
-                <span className="text-[9px] text-[#4A5D43] font-semibold mt-0.5 block">
+                <span className="text-[9px] text-[#4A5D43] font-semibold block">
                   Drag to reshape boundary
                 </span>
+                {onVertexDelete && points.length > 3 && (
+                  <button
+                    type="button"
+                    onClick={() => onVertexDelete(idx)}
+                    className="w-full mt-1 px-2 py-0.5 bg-red-600 hover:bg-red-700 text-white rounded-md text-[9px] font-bold transition cursor-pointer"
+                  >
+                    🗑️ Delete Corner
+                  </button>
+                )}
               </div>
             </Popup>
           </Marker>
         ))}
 
-        {/* Pinpoint Target Marker */}
+        {/* 4. Midpoint '+' Handles to Insert Points Along Edges */}
+        {onInsertMidpoint &&
+          midpoints.map((mid, mIdx) => (
+            <Marker
+              key={`midpoint-${mIdx}-${mid.coord[0].toFixed(5)}-${mid.coord[1].toFixed(5)}`}
+              position={mid.coord}
+              icon={createMidpointIcon()}
+              eventHandlers={{
+                click: () => {
+                  onInsertMidpoint(mid.index, mid.coord);
+                },
+              }}
+            >
+              <Popup className="custom-popup" closeButton={false}>
+                <div className="p-1 text-center font-sans">
+                  <span className="font-bold text-[10px] text-[#2C2C24] block">Click to Add Corner</span>
+                  <span className="text-[9px] text-[#C18C5D] font-semibold block">
+                    Insert vertex here
+                  </span>
+                </div>
+              </Popup>
+            </Marker>
+          ))}
+
+        {/* 5. Target Pinpoint Dropper Marker */}
         {pinpointLocation && (
           <Marker
             position={pinpointLocation}
@@ -277,7 +375,7 @@ export default function LeafletMapInner({
             <Popup className="custom-popup" closeButton={false} autoPan={true}>
               <div className="p-2 text-center font-sans space-y-1.5 min-w-[160px]">
                 <div className="flex items-center justify-center gap-1 text-red-600 font-bold text-xs">
-                  <span>📍 Pinpoint Location</span>
+                  <span>📍 Target Pinpoint</span>
                 </div>
                 <div className="bg-[#F0EBE5] p-1.5 rounded-lg font-mono text-[11px] text-[#2C2C24]">
                   <div>Lat: {pinpointLocation[0].toFixed(5)}°</div>
@@ -298,9 +396,9 @@ export default function LeafletMapInner({
         )}
       </MapContainer>
 
-      {/* Floating Pointer Realtime Coordinate HUD in Bottom-Left */}
+      {/* Floating Pointer Realtime Coordinates HUD in Bottom-Left */}
       {hoverCoords && (
-        <div className="absolute bottom-3 left-3 z-20 bg-[#FEFEFA]/90 backdrop-blur-md px-3 py-1 rounded-full border border-[#DED8CF] shadow-sm text-[11px] font-mono text-[#2C2C24] pointer-events-none flex items-center gap-1.5">
+        <div className="absolute bottom-3 left-3 z-20 bg-[#FEFEFA]/95 backdrop-blur-md px-3 py-1 rounded-full border border-[#DED8CF] shadow-sm text-[11px] font-mono text-[#2C2C24] pointer-events-none flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-[#4A5D43] animate-pulse"></span>
           <span>
             {hoverCoords.lat.toFixed(5)}°N, {normalizeLng(hoverCoords.lon).toFixed(5)}°E

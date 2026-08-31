@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useTransition, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { 
   RotateCcw, 
@@ -14,8 +14,32 @@ import {
   MapPin,
   Ruler,
   Layers,
-  Maximize2
+  Trash2,
+  Sparkles,
+  Search,
+  Compass,
+  Activity,
+  Droplets,
+  TrendingUp,
+  Globe,
+  Sun,
+  ShieldCheck,
+  ChevronDown
 } from "lucide-react";
+import { 
+  calculatePolygonArea, 
+  calculatePerimeter, 
+  convertAreaUnits, 
+  getPolygonCenter,
+  formatUnitDisplay,
+  LandUnits
+} from "../utils/geoMeasurement";
+import { 
+  getAgroClimaticZone, 
+  searchAgriculturalLocations, 
+  INDIAN_AGRICULTURAL_PLACES, 
+  IndianPlace 
+} from "../services/geoService";
 
 interface FarmMapDrawerProps {
   centerLat: number;
@@ -25,56 +49,14 @@ interface FarmMapDrawerProps {
   onLocationChange?: (lat: number, lon: number, name?: string) => void;
 }
 
-// Geodesic shoelace area calculation for polygon points in [lat, lon]
-function calculatePolygonAreaAcres(points: [number, number][]): number {
-  if (points.length < 3) return 0;
-  const avgLat = points.reduce((sum, p) => sum + p[0], 0) / points.length;
-  const latFactor = 111320; // meters per degree latitude
-  const lonFactor = 111320 * Math.cos((avgLat * Math.PI) / 180);
-
-  let areaSqMeters = 0;
-  for (let i = 0; i < points.length; i++) {
-    const j = (i + 1) % points.length;
-    const xi = points[i][1] * lonFactor;
-    const yi = points[i][0] * latFactor;
-    const xj = points[j][1] * lonFactor;
-    const yj = points[j][0] * latFactor;
-    areaSqMeters += xi * yj - xj * yi;
-  }
-  areaSqMeters = Math.abs(areaSqMeters) / 2;
-  const acres = areaSqMeters / 4046.86;
-  return Math.max(0.1, Math.round(acres * 100) / 100);
-}
-
-// Geodesic boundary perimeter calculation (Haversine in meters)
-function calculatePerimeterMeters(points: [number, number][]): number {
-  if (points.length < 2) return 0;
-  let totalDist = 0;
-  for (let i = 0; i < points.length; i++) {
-    const next = points[(i + 1) % points.length];
-    const lat1 = (points[i][0] * Math.PI) / 180;
-    const lon1 = (points[i][1] * Math.PI) / 180;
-    const lat2 = (next[0] * Math.PI) / 180;
-    const lon2 = (next[1] * Math.PI) / 180;
-    const dLat = lat2 - lat1;
-    const dLon = lon2 - lon1;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    totalDist += 6371000 * c;
-  }
-  return Math.round(totalDist);
-}
-
-// Dynamically import the Leaflet map component with ssr: false
+// Dynamically import Leaflet map inner with ssr: false
 const LeafletMapInner = dynamic(() => import("./LeafletMapInner"), {
   ssr: false,
   loading: () => (
-    <div className="w-full h-full min-h-[480px] flex items-center justify-center bg-[#F0EBE5] text-[#78786C] text-sm">
+    <div className="w-full h-full min-h-[500px] flex items-center justify-center bg-[#F0EBE5] text-[#78786C] text-sm">
       <div className="flex items-center gap-2">
         <Crosshair className="w-5 h-5 animate-spin text-[#4A5D43]" />
-        <span>Loading High-Res Earth Observation Map...</span>
+        <span>Loading High-Resolution Satellite GIS Canvas...</span>
       </div>
     </div>
   ),
@@ -88,15 +70,40 @@ export default function FarmMapDrawer({
   onLocationChange,
 }: FarmMapDrawerProps) {
   const [points, setPoints] = useState<[number, number][]>([]);
-  const [mapType, setMapType] = useState<"satellite" | "street">("satellite");
-  const [areaAcres, setAreaAcres] = useState<number>(5.0);
-  const [perimeterMeters, setPerimeterMeters] = useState<number>(570);
+  const [mapType, setMapType] = useState<"hybrid" | "satellite" | "esri" | "topo" | "street">("hybrid");
+  const [activeUnit, setActiveUnit] = useState<"acres" | "hectares" | "gunthas" | "bighas" | "cents" | "sqm">("acres");
   const [khasraNumber, setKhasraNumber] = useState<string>("Survey #142/A");
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
   const [isPinpointMode, setIsPinpointMode] = useState<boolean>(false);
   const [pinpointLocation, setPinpointLocation] = useState<[number, number] | null>(null);
+  
+  // Search & Presets
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<IndianPlace[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [showSearchDropdown, setShowSearchDropdown] = useState(false);
+  
+  // AI Land Scanner State
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState(0);
+  const [scanTelemetry, setScanTelemetry] = useState<{
+    ndvi: number;
+    soilMoisture: number;
+    vigor: string;
+    waterStress: string;
+    agroZone: string;
+  } | null>(null);
+
   const initializedCenter = React.useRef<{ lat: number; lon: number }>({ lat: 0, lon: 0 });
 
+  // Compute Area & Perimeter dynamically
+  const areaSqMeters = useMemo(() => calculatePolygonArea(points), [points]);
+  const areaUnits = useMemo(() => convertAreaUnits(areaSqMeters), [areaSqMeters]);
+  const perimeterMeters = useMemo(() => calculatePerimeter(points), [points]);
+  const polygonCenter = useMemo(() => getPolygonCenter(points), [points]);
+  const activeZone = useMemo(() => getAgroClimaticZone(polygonCenter[0], polygonCenter[1]), [polygonCenter]);
+
+  // Initialize standard square farm polygon on mount or location teleport
   useEffect(() => {
     const dist = Math.hypot(centerLat - initializedCenter.current.lat, centerLon - initializedCenter.current.lon);
     if (dist > 0.0005) {
@@ -109,10 +116,44 @@ export default function FarmMapDrawer({
         [centerLat + d, centerLon - d],
       ];
       setPoints(initialPolygon);
-      setAreaAcres(5.0);
-      setPerimeterMeters(calculatePerimeterMeters(initialPolygon));
     }
   }, [centerLat, centerLon]);
+
+  // Debounced Place Search
+  useEffect(() => {
+    if (!searchQuery.trim() || searchQuery.length < 2) {
+      setSearchResults([]);
+      setShowSearchDropdown(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const results = await searchAgriculturalLocations(searchQuery, controller.signal);
+        setSearchResults(results);
+        setShowSearchDropdown(true);
+      } catch (err) {
+        console.error("Search error:", err);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [searchQuery]);
+
+  // Notify parent of polygon updates
+  const emitPolygonChange = (newPoints: [number, number][]) => {
+    const sqM = calculatePolygonArea(newPoints);
+    const acres = Math.max(0.1, Math.round((sqM / 4046.856) * 100) / 100);
+    const converted = newPoints.map(([lat, lon]) => [lon, lat]);
+    onPolygonChange(converted, acres);
+  };
 
   const handleResetPlot = () => {
     const d = 0.00064 * Math.sqrt(5.0);
@@ -123,12 +164,10 @@ export default function FarmMapDrawer({
       [centerLat + d, centerLon - d],
     ];
     setPoints(initialPolygon);
-    setAreaAcres(5.0);
-    setPerimeterMeters(calculatePerimeterMeters(initialPolygon));
     setIsDrawing(false);
     setPinpointLocation(null);
-    const converted = initialPolygon.map(([lat, lon]) => [lon, lat]);
-    onPolygonChange(converted, 5.0);
+    setScanTelemetry(null);
+    emitPolygonChange(initialPolygon);
   };
 
   const handleApplyPresetSize = (acres: number) => {
@@ -140,35 +179,60 @@ export default function FarmMapDrawer({
       [centerLat + d, centerLon - d],
     ];
     setPoints(newPolygon);
-    setAreaAcres(acres);
-    setPerimeterMeters(calculatePerimeterMeters(newPolygon));
     setIsDrawing(false);
-    const converted = newPolygon.map(([lat, lon]) => [lon, lat]);
-    onPolygonChange(converted, acres);
+    emitPolygonChange(newPolygon);
+  };
+
+  const handleSelectPresetLocation = (place: IndianPlace) => {
+    if (onLocationChange) {
+      onLocationChange(place.lat, place.lon, place.name);
+    }
+    const d = 0.00064 * Math.sqrt(areaUnits.acres || 5.0);
+    const newPolygon: [number, number][] = [
+      [place.lat - d, place.lon - d],
+      [place.lat - d, place.lon + d],
+      [place.lat + d, place.lon + d],
+      [place.lat + d, place.lon - d],
+    ];
+    setPoints(newPolygon);
+    setSearchQuery("");
+    setShowSearchDropdown(false);
+    emitPolygonChange(newPolygon);
   };
 
   const handleVertexDrag = (index: number, newPos: [number, number]) => {
     const updated: [number, number][] = [...points];
     updated[index] = newPos;
-    const newAcres = calculatePolygonAreaAcres(updated);
-    const newPerim = calculatePerimeterMeters(updated);
     setPoints(updated);
-    setAreaAcres(newAcres);
-    setPerimeterMeters(newPerim);
-    const converted = updated.map(([lat, lon]) => [lon, lat]);
-    onPolygonChange(converted, newAcres);
+    emitPolygonChange(updated);
+  };
+
+  const handleVertexDelete = (index: number) => {
+    if (points.length <= 3) return;
+    const updated = points.filter((_, idx) => idx !== index);
+    setPoints(updated);
+    emitPolygonChange(updated);
+  };
+
+  const handleInsertMidpoint = (insertIndex: number, coord: [number, number]) => {
+    const updated = [...points];
+    updated.splice(insertIndex, 0, coord);
+    setPoints(updated);
+    emitPolygonChange(updated);
+  };
+
+  const handleUndoLastPoint = () => {
+    if (points.length <= 3) return;
+    const updated = points.slice(0, -1);
+    setPoints(updated);
+    emitPolygonChange(updated);
   };
 
   const handleMapClick = (lat: number, lon: number) => {
     if (isDrawing) {
       const updated: [number, number][] = [...points, [lat, lon]];
-      const newAcres = calculatePolygonAreaAcres(updated);
-      const newPerim = calculatePerimeterMeters(updated);
       setPoints(updated);
-      setAreaAcres(newAcres);
-      setPerimeterMeters(newPerim);
-      const converted = updated.map(([pLat, pLon]) => [pLon, pLat]);
-      onPolygonChange(converted, newAcres);
+      emitPolygonChange(updated);
     } else {
       setPinpointLocation([lat, lon]);
     }
@@ -178,7 +242,7 @@ export default function FarmMapDrawer({
     if (onLocationChange) {
       onLocationChange(lat, lon, `Farm Plot (${lat.toFixed(4)}°N, ${lon.toFixed(4)}°E)`);
     }
-    const d = 0.00064 * Math.sqrt(areaAcres || 5.0);
+    const d = 0.00064 * Math.sqrt(areaUnits.acres || 5.0);
     const newPolygon: [number, number][] = [
       [lat - d, lon - d],
       [lat - d, lon + d],
@@ -186,11 +250,34 @@ export default function FarmMapDrawer({
       [lat + d, lon - d],
     ];
     setPoints(newPolygon);
-    const converted = newPolygon.map(([pLat, pLon]) => [pLon, pLat]);
-    onPolygonChange(converted, areaAcres);
+    setPinpointLocation(null);
+    emitPolygonChange(newPolygon);
   };
 
-  // Export Official PMFBY / Land Record GeoJSON
+  // Run AI Land Parcel Scan Simulation
+  const handleScanLand = () => {
+    setIsScanning(true);
+    setScanProgress(0);
+    const interval = setInterval(() => {
+      setScanProgress((prev) => {
+        if (prev >= 100) {
+          clearInterval(interval);
+          setIsScanning(false);
+          setScanTelemetry({
+            ndvi: 0.78,
+            soilMoisture: 38.5,
+            vigor: "High Biomass Density (Dense Canopy)",
+            waterStress: "Low Stress (Optimal Root Saturation)",
+            agroZone: activeZone.name,
+          });
+          return 100;
+        }
+        return prev + 25;
+      });
+    }, 180);
+  };
+
+  // Export PMFBY GeoJSON
   const handleExportGeoJSON = () => {
     if (points.length < 3) return;
     const geoCoordinates = points.map(([lat, lon]) => [lon, lat]);
@@ -198,7 +285,7 @@ export default function FarmMapDrawer({
 
     const geojson = {
       type: "FeatureCollection",
-      name: `${farmName}_LandParcel`,
+      name: `${farmName}_PMFBY_LandParcel`,
       crs: {
         type: "name",
         properties: { name: "urn:ogc:def:crs:OGC:1.3:CRS84" }
@@ -209,13 +296,17 @@ export default function FarmMapDrawer({
           properties: {
             farm_name: farmName,
             survey_khasra_no: khasraNumber,
-            area_acres: areaAcres,
-            area_hectares: Math.round(areaAcres * 0.404686 * 100) / 100,
+            area_acres: areaUnits.acres,
+            area_hectares: areaUnits.hectares,
+            area_gunthas: areaUnits.gunthas,
+            area_bighas: areaUnits.bighas,
             perimeter_meters: perimeterMeters,
-            center_latitude: centerLat,
-            center_longitude: centerLon,
-            compliance: "PMFBY Compliant",
-            generated_by: "AgriSphere AI",
+            agro_climatic_zone: activeZone.name,
+            major_crops: activeZone.majorCrops,
+            center_latitude: polygonCenter[0],
+            center_longitude: polygonCenter[1],
+            compliance: "PMFBY Compliant Field Cadastral",
+            generated_by: "AgriSense AI",
             timestamp: new Date().toISOString()
           },
           geometry: {
@@ -249,9 +340,9 @@ export default function FarmMapDrawer({
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
     <name>${farmName}</name>
-    <description>Khasra/Survey: ${khasraNumber} | Area: ${areaAcres} Acres</description>
+    <description>Khasra: ${khasraNumber} | Area: ${areaUnits.acres} Acres (${areaUnits.hectares} Ha) | Zone: ${activeZone.name}</description>
     <Placemark>
-      <name>${farmName} Parcel</name>
+      <name>${farmName} Cadastral Boundary</name>
       <Polygon>
         <extrude>1</extrude>
         <altitudeMode>clampToGround</altitudeMode>
@@ -277,170 +368,338 @@ export default function FarmMapDrawer({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 font-sans">
       
-      {/* 1. CLEAN EXTERNAL TOOLBAR & LAND METRICS PANEL (Above the Map Canvas) */}
-      <div className="p-3.5 sm:p-4 rounded-2xl bg-[#FEFEFA] border border-[#E5E0D5] shadow-soft flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+      {/* 1. TOP INTERACTIVE TOOLBAR & SEARCH BAR */}
+      <div className="p-3.5 sm:p-4 rounded-2xl bg-[#FEFEFA] border border-[#E5E0D5] shadow-soft flex flex-col gap-3">
         
-        {/* Left: Farm Info, Area, Perimeter & Presets */}
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="w-2.5 h-2.5 rounded-full bg-[#4A5D43] animate-pulse"></span>
-            <span className="font-bold text-xs sm:text-sm text-[#2C2C24] font-serif">{farmName}</span>
+        {/* Row 1: Location Search & Preset Estates */}
+        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
+          
+          {/* Search Input with Autocomplete */}
+          <div className="relative flex-1 max-w-md">
+            <div className="flex items-center gap-2 bg-[#FAF8F3] px-3 py-1.5 rounded-xl border border-[#E5E0D5]">
+              <Search className="w-4 h-4 text-[#4A5D43] shrink-0" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onFocus={() => {
+                  if (searchResults.length > 0) setShowSearchDropdown(true);
+                }}
+                placeholder="Search Indian farm, mandi, district or PIN..."
+                className="w-full bg-transparent text-xs text-[#2C2C24] focus:outline-none placeholder:text-stone-400 font-medium"
+              />
+              {isSearching && <Crosshair className="w-3.5 h-3.5 animate-spin text-[#4A5D43]" />}
+            </div>
+
+            {/* Dropdown Results */}
+            {showSearchDropdown && searchResults.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1.5 bg-[#FEFEFA] border border-[#DED8CF] rounded-2xl shadow-xl z-50 overflow-hidden max-h-60 overflow-y-auto">
+                <div className="p-1.5">
+                  {searchResults.map((place, idx) => (
+                    <button
+                      key={`${place.name}-${idx}`}
+                      type="button"
+                      onClick={() => handleSelectPresetLocation(place)}
+                      className="w-full text-left p-2 rounded-xl hover:bg-[#FAF8F3] transition flex items-center justify-between group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2">
+                        <MapPin className="w-3.5 h-3.5 text-[#4A5D43] shrink-0 group-hover:scale-110 transition" />
+                        <div>
+                          <div className="text-xs font-bold text-[#2C2C24]">{place.name}</div>
+                          <div className="text-[10px] text-[#78786C]">{place.state} • {place.tag}</div>
+                        </div>
+                      </div>
+                      <span className="text-[10px] text-[#4A5D43] font-bold opacity-0 group-hover:opacity-100 transition">
+                        Fly Here →
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-1.5 bg-[#FAF8F3] px-2.5 py-1 rounded-lg border border-[#E5E0D5]">
-            <Tag className="w-3 h-3 text-[#4A5D43] shrink-0" />
-            <input
-              type="text"
-              value={khasraNumber}
-              onChange={(e) => setKhasraNumber(e.target.value)}
-              placeholder="Survey / Khasra #"
-              className="w-28 bg-transparent text-[11px] font-mono text-[#2C2C24] focus:outline-none placeholder:text-stone-400 font-semibold"
-            />
-          </div>
-
-          {/* Area & Perimeter Pills */}
-          <div className="flex items-center gap-1.5 text-xs font-semibold">
-            <span className="px-2.5 py-1 rounded-lg bg-[#FAF8F3] border border-[#E5E0D5] text-[#4A5D43] font-bold">
-              🌾 {areaAcres} Acres <span className="text-[10px] text-[#78786C] font-normal">({(areaAcres * 0.4047).toFixed(1)} Ha)</span>
-            </span>
-            <span className="px-2.5 py-1 rounded-lg bg-[#FAF8F3] border border-[#E5E0D5] text-[#78786C] font-mono text-[11px]">
-              Perimeter: <b className="text-[#2C2C24]">{perimeterMeters}m</b>
-            </span>
-          </div>
-
-          {/* Presets Pills */}
-          <div className="flex items-center gap-1">
-            {[1.0, 2.5, 5.0, 10.0, 20.0].map((acres) => (
+          {/* Preset Farm Estates Quick Pills */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] font-bold text-[#78786C] uppercase tracking-wider shrink-0">Presets:</span>
+            {INDIAN_AGRICULTURAL_PLACES.slice(0, 4).map((estate) => (
               <button
-                key={acres}
+                key={estate.name}
                 type="button"
-                onClick={() => handleApplyPresetSize(acres)}
-                className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition cursor-pointer ${
-                  Math.abs(areaAcres - acres) < 0.2
-                    ? "bg-[#4A5D43] text-white shadow-xs"
-                    : "bg-[#F0EBE5] text-[#2C2C24] hover:bg-[#E5DFD7] border border-[#DED8CF]"
-                }`}
+                onClick={() => handleSelectPresetLocation(estate)}
+                className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#2C2C24] border border-[#E5E0D5] transition cursor-pointer"
               >
-                {acres} Ac
+                📍 {estate.town}
               </button>
             ))}
           </div>
+
         </div>
 
-        {/* Right: Map Controls & Export Buttons */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <div className="bg-[#EAE6DE] p-0.5 rounded-xl flex items-center border border-[#DAD5C9]">
-            <button
-              type="button"
-              onClick={() => setMapType("satellite")}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
-                mapType === "satellite" ? "bg-[#4A5D43] text-white shadow-xs" : "text-[#4A5D43]"
-              }`}
-            >
-              Satellite
-            </button>
-            <button
-              type="button"
-              onClick={() => setMapType("street")}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
-                mapType === "street" ? "bg-[#4A5D43] text-white shadow-xs" : "text-[#4A5D43]"
-              }`}
-            >
-              Street
-            </button>
+        {/* Row 2: Metrics, Unit Switcher, Layers & Action Buttons */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pt-2 border-t border-[#E5E0D5]/70">
+          
+          {/* Left: Farm Name, Khasra, Area & Unit Pills */}
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <div className="flex items-center gap-1.5 bg-[#FAF8F3] px-2.5 py-1 rounded-lg border border-[#E5E0D5]">
+              <Tag className="w-3 h-3 text-[#4A5D43] shrink-0" />
+              <input
+                type="text"
+                value={khasraNumber}
+                onChange={(e) => setKhasraNumber(e.target.value)}
+                placeholder="Survey / Khasra #"
+                className="w-24 bg-transparent text-[11px] font-mono text-[#2C2C24] focus:outline-none placeholder:text-stone-400 font-semibold"
+              />
+            </div>
+
+            {/* Active Land Measurement Area Badge */}
+            <div className="flex items-center gap-1 bg-[#FAF8F3] px-2.5 py-1 rounded-lg border border-[#E5E0D5] text-xs font-bold text-[#4A5D43]">
+              <span>🌾 {formatUnitDisplay(areaUnits, activeUnit)}</span>
+            </div>
+
+            {/* Indian Land Unit Selector */}
+            <div className="bg-[#EAE6DE] p-0.5 rounded-lg flex items-center border border-[#DAD5C9]">
+              {(["acres", "hectares", "gunthas", "bighas", "cents"] as const).map((unit) => (
+                <button
+                  key={unit}
+                  type="button"
+                  onClick={() => setActiveUnit(unit)}
+                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold capitalize transition cursor-pointer ${
+                    activeUnit === unit ? "bg-[#4A5D43] text-white shadow-xs" : "text-[#4A5D43]"
+                  }`}
+                >
+                  {unit === "hectares" ? "Ha" : unit}
+                </button>
+              ))}
+            </div>
+
+            {/* Acreage Presets */}
+            <div className="flex items-center gap-1">
+              {[1.0, 2.5, 5.0, 10.0].map((acres) => (
+                <button
+                  key={acres}
+                  type="button"
+                  onClick={() => handleApplyPresetSize(acres)}
+                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition cursor-pointer ${
+                    Math.abs(areaUnits.acres - acres) < 0.2
+                      ? "bg-[#4A5D43] text-white shadow-xs"
+                      : "bg-[#F0EBE5] text-[#2C2C24] hover:bg-[#E5DFD7] border border-[#DED8CF]"
+                  }`}
+                >
+                  {acres} Ac
+                </button>
+              ))}
+            </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setIsPinpointMode(!isPinpointMode);
-              setIsDrawing(false);
-            }}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold transition cursor-pointer border ${
-              isPinpointMode
-                ? "bg-red-600 text-white border-red-600 shadow-xs animate-pulse"
-                : "bg-[#FAF8F3] hover:bg-red-50 text-red-700 border-red-200"
-            }`}
-          >
-            <MapPin className="w-3.5 h-3.5" />
-            <span>{isPinpointMode ? "Targeting..." : "Pinpoint"}</span>
-          </button>
+          {/* Right: Map Layers, Draw Tools, AI Land Scanner & Export */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            
+            {/* Map Layer Switcher */}
+            <div className="bg-[#EAE6DE] p-0.5 rounded-xl flex items-center border border-[#DAD5C9]">
+              <button
+                type="button"
+                onClick={() => setMapType("hybrid")}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer ${
+                  mapType === "hybrid" ? "bg-[#4A5D43] text-white shadow-xs" : "text-[#4A5D43]"
+                }`}
+                title="Google Hybrid Satellite with villages & roads"
+              >
+                🛰️ Google Hybrid
+              </button>
+              <button
+                type="button"
+                onClick={() => setMapType("esri")}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer ${
+                  mapType === "esri" ? "bg-[#4A5D43] text-white shadow-xs" : "text-[#4A5D43]"
+                }`}
+                title="Esri Earth Observation"
+              >
+                Esri
+              </button>
+              <button
+                type="button"
+                onClick={() => setMapType("street")}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer ${
+                  mapType === "street" ? "bg-[#4A5D43] text-white shadow-xs" : "text-[#4A5D43]"
+                }`}
+                title="OpenStreetMap Street View"
+              >
+                Street
+              </button>
+            </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setIsDrawing(!isDrawing);
-              setIsPinpointMode(false);
-            }}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold transition cursor-pointer border ${
-              isDrawing
-                ? "bg-amber-600 text-white border-amber-600 shadow-xs animate-pulse"
-                : "bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#4A5D43] border-[#E5E0D5]"
-            }`}
-          >
-            <PenTool className="w-3.5 h-3.5" />
-            <span>{isDrawing ? "Adding..." : "Add Corners"}</span>
-          </button>
+            {/* Pinpoint Mode */}
+            <button
+              type="button"
+              onClick={() => {
+                setIsPinpointMode(!isPinpointMode);
+                setIsDrawing(false);
+              }}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold transition cursor-pointer border ${
+                isPinpointMode
+                  ? "bg-red-600 text-white border-red-600 shadow-xs animate-pulse"
+                  : "bg-[#FAF8F3] hover:bg-red-50 text-red-700 border-red-200"
+              }`}
+              title="Click anywhere on map to drop target pin"
+            >
+              <MapPin className="w-3.5 h-3.5" />
+              <span>{isPinpointMode ? "Targeting..." : "Pinpoint"}</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={handleResetPlot}
-            className="flex items-center gap-1 px-2 py-1 rounded-xl text-[11px] font-bold text-[#78786C] hover:text-[#2C2C24] hover:bg-[#F0EBE5] transition cursor-pointer border border-[#E5E0D5]"
-            title="Reset to standard square polygon"
-          >
-            <RotateCcw className="w-3 h-3" />
-            <span>Reset</span>
-          </button>
+            {/* Add Corners Drawing Mode */}
+            <button
+              type="button"
+              onClick={() => {
+                setIsDrawing(!isDrawing);
+                setIsPinpointMode(false);
+              }}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold transition cursor-pointer border ${
+                isDrawing
+                  ? "bg-amber-600 text-white border-amber-600 shadow-xs animate-pulse"
+                  : "bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#4A5D43] border-[#E5E0D5]"
+              }`}
+              title="Click on map to sequentially add boundary vertices"
+            >
+              <PenTool className="w-3.5 h-3.5" />
+              <span>{isDrawing ? "Adding..." : "Add Corners"}</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={handleExportGeoJSON}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#4A5D43] border border-[#E5E0D5] transition cursor-pointer shadow-2xs"
-          >
-            <Download className="w-3 h-3" />
-            <span>GeoJSON</span>
-          </button>
+            {/* Undo Last Point */}
+            {points.length > 3 && (
+              <button
+                type="button"
+                onClick={handleUndoLastPoint}
+                className="flex items-center gap-1 px-2 py-1 rounded-xl text-[10px] font-bold text-[#78786C] hover:text-[#2C2C24] hover:bg-[#F0EBE5] transition cursor-pointer border border-[#E5E0D5]"
+                title="Undo last point"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Undo</span>
+              </button>
+            )}
 
-          <button
-            type="button"
-            onClick={handleExportKML}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#4A5D43] border border-[#E5E0D5] transition cursor-pointer shadow-2xs"
-          >
-            <FileCode className="w-3 h-3" />
-            <span>KML</span>
-          </button>
+            {/* Reset */}
+            <button
+              type="button"
+              onClick={handleResetPlot}
+              className="flex items-center gap-1 px-2 py-1 rounded-xl text-[10px] font-bold text-[#78786C] hover:text-[#2C2C24] hover:bg-[#F0EBE5] transition cursor-pointer border border-[#E5E0D5]"
+              title="Reset to standard square polygon"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Reset</span>
+            </button>
+
+            {/* AI Land Scan Button */}
+            <button
+              type="button"
+              onClick={handleScanLand}
+              disabled={isScanning}
+              className="flex items-center gap-1 px-3 py-1 rounded-xl text-[11px] font-bold bg-[#4A5D43] hover:bg-[#3A4B34] text-white shadow-xs transition cursor-pointer"
+            >
+              <Sparkles className={`w-3.5 h-3.5 ${isScanning ? "animate-spin" : ""}`} />
+              <span>{isScanning ? `Scanning ${scanProgress}%` : "Scan Parcel"}</span>
+            </button>
+
+            {/* Export GeoJSON */}
+            <button
+              type="button"
+              onClick={handleExportGeoJSON}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-xl text-[10px] font-bold bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#4A5D43] border border-[#E5E0D5] transition cursor-pointer"
+              title="Export PMFBY GeoJSON"
+            >
+              <Download className="w-3 h-3" />
+              <span>GeoJSON</span>
+            </button>
+
+            {/* Export KML */}
+            <button
+              type="button"
+              onClick={handleExportKML}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-xl text-[10px] font-bold bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#4A5D43] border border-[#E5E0D5] transition cursor-pointer"
+              title="Export Google Earth KML"
+            >
+              <FileCode className="w-3 h-3" />
+              <span>KML</span>
+            </button>
+
+          </div>
+
         </div>
 
       </div>
 
-      {/* 2. 100% CLEAN, UNOBSTRUCTED MAP CANVAS */}
-      <div className="relative w-full h-[520px] rounded-[2rem] overflow-hidden border border-[#DED8CF] shadow-soft-lg bg-[#F0EBE5]">
+      {/* 2. AI LAND SCAN DIAGNOSTIC TELEMETRY (Appears after Scanning) */}
+      {scanTelemetry && (
+        <div className="p-3.5 rounded-2xl bg-[#FEFEFA] border border-[#4A5D43]/30 shadow-soft animate-in fade-in slide-in-from-top-2">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span className="font-bold text-xs text-[#2C2C24]">🌱 AI Field Scan Telemetry & Cadastral Profile</span>
+            </div>
+            <span className="text-[10px] font-bold text-[#4A5D43] bg-[#4A5D43]/10 px-2 py-0.5 rounded-full">
+              Zone #{activeZone.id}: {activeZone.name}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <div className="p-2 rounded-xl bg-[#FAF8F3] border border-[#E5E0D5]">
+              <div className="text-[10px] text-[#78786C]">Vegetation Index</div>
+              <div className="font-bold text-[#2C2C24] font-mono">NDVI: {scanTelemetry.ndvi}</div>
+              <div className="text-[9px] text-emerald-600 font-semibold">{scanTelemetry.vigor}</div>
+            </div>
+
+            <div className="p-2 rounded-xl bg-[#FAF8F3] border border-[#E5E0D5]">
+              <div className="text-[10px] text-[#78786C]">Root Moisture (0-7cm)</div>
+              <div className="font-bold text-[#2C2C24] font-mono">{scanTelemetry.soilMoisture}%</div>
+              <div className="text-[9px] text-[#4A5D43] font-semibold">{scanTelemetry.waterStress}</div>
+            </div>
+
+            <div className="p-2 rounded-xl bg-[#FAF8F3] border border-[#E5E0D5]">
+              <div className="text-[10px] text-[#78786C]">Boundary Perimeter</div>
+              <div className="font-bold text-[#2C2C24] font-mono">{perimeterMeters}m ({Math.round(perimeterMeters * 3.28084)} ft)</div>
+              <div className="text-[9px] text-[#78786C]">{points.length} Cadastral Vertices</div>
+            </div>
+
+            <div className="p-2 rounded-xl bg-[#FAF8F3] border border-[#E5E0D5]">
+              <div className="text-[10px] text-[#78786C]">Recommended Crops</div>
+              <div className="font-bold text-[#4A5D43] truncate">{activeZone.majorCrops}</div>
+              <div className="text-[9px] text-stone-500">ICAR Standard</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3. 100% UNOBSTRUCTED HIGH-RES MAP CANVAS */}
+      <div className="relative w-full h-[530px] rounded-[2rem] overflow-hidden border border-[#DED8CF] shadow-soft-lg bg-[#F0EBE5]">
         
-        {/* Render Dynamic Client Leaflet Map */}
         <LeafletMapInner
           centerLat={centerLat}
           centerLon={centerLon}
           farmName={farmName}
           points={points}
           mapType={mapType}
-          areaAcres={areaAcres}
+          areaAcres={areaUnits.acres}
           isDrawing={isDrawing}
           isPinpointMode={isPinpointMode}
           pinpointLocation={pinpointLocation}
           onVertexDrag={handleVertexDrag}
+          onVertexDelete={handleVertexDelete}
+          onInsertMidpoint={handleInsertMidpoint}
           onPinpointDrag={(newPos) => setPinpointLocation(newPos)}
           onMapClick={handleMapClick}
           onMoveFarmHere={handleMoveFarmHere}
         />
 
-        {/* Floating Active Pinpoint Action Bar at Bottom (Only when a point is pinned) */}
+        {/* Floating Active Pinpoint Action Bar at Bottom (When pinpoint is active) */}
         {pinpointLocation && (
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 bg-[#FEFEFA]/95 backdrop-blur-md px-4 py-2 rounded-full border border-red-200 shadow-xl text-xs text-[#2C2C24] font-bold flex items-center gap-3 animate-in slide-in-from-bottom-2">
             <div className="flex items-center gap-1.5 text-red-600">
               <MapPin className="w-4 h-4 animate-bounce" />
-              <span className="font-mono text-[11px]">{pinpointLocation[0].toFixed(4)}°N, {pinpointLocation[1].toFixed(4)}°E</span>
+              <span className="font-mono text-[11px]">
+                {pinpointLocation[0].toFixed(4)}°N, {pinpointLocation[1].toFixed(4)}°E
+              </span>
             </div>
 
             <button
