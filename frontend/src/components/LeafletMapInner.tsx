@@ -6,6 +6,7 @@ import {
   TileLayer, 
   Marker, 
   Polygon, 
+  Polyline,
   Popup, 
   useMap, 
   useMapEvents 
@@ -30,26 +31,45 @@ const normalizeLng = (lng: number): number => {
 
 // Custom Numbered Corner Pin (Leaflet divIcon)
 const createVertexIcon = (index: number, total: number) => {
+  const isFirst = index === 0;
   return L.divIcon({
     className: "custom-vertex-icon",
     html: `<div style="
-      width: 24px;
-      height: 24px;
-      background: #4A5D43;
-      color: #FEFEFA;
-      border: 2px solid #FEFEFA;
-      border-radius: 50%;
+      position: relative;
+      width: 28px;
+      height: 28px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 11px;
-      font-weight: 800;
-      box-shadow: 0 3px 8px rgba(0,0,0,0.4);
-      cursor: grab;
-      transition: transform 0.15s ease;
-    ">${index + 1}</div>`,
-    iconSize: [24, 24],
-    iconAnchor: [12, 12],
+    ">
+      ${total === 1 || (total === 2 && isFirst) ? `
+      <div style="
+        position: absolute;
+        width: 38px;
+        height: 38px;
+        border-radius: 50%;
+        background: rgba(74, 93, 67, 0.35);
+        animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+      "></div>` : ''}
+      <div style="
+        width: 26px;
+        height: 26px;
+        background: ${isFirst ? '#385723' : '#4A5D43'};
+        color: #FEFEFA;
+        border: 2px solid #FEFEFA;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 800;
+        box-shadow: 0 3px 8px rgba(0,0,0,0.45);
+        cursor: grab;
+        transition: transform 0.15s ease;
+      ">${index + 1}</div>
+    </div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
   });
 };
 
@@ -58,8 +78,8 @@ const createMidpointIcon = () => {
   return L.divIcon({
     className: "custom-midpoint-icon",
     html: `<div style="
-      width: 18px;
-      height: 18px;
+      width: 20px;
+      height: 20px;
       background: #C18C5D;
       color: #FFFFFF;
       border: 1.5px solid #FFFFFF;
@@ -67,15 +87,15 @@ const createMidpointIcon = () => {
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 12px;
+      font-size: 13px;
       font-weight: bold;
       box-shadow: 0 2px 6px rgba(0,0,0,0.3);
       cursor: pointer;
-      opacity: 0.85;
+      opacity: 0.9;
       transition: all 0.2s ease;
     ">+</div>`,
-    iconSize: [18, 18],
-    iconAnchor: [9, 9],
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
   });
 };
 
@@ -163,7 +183,7 @@ function MapInteractionHandler({
       if (isPinpointMode || isDrawing) {
         container.style.cursor = "crosshair";
       } else {
-        container.style.cursor = "grab";
+        container.style.cursor = "crosshair"; // Keep crosshair active so user knows clicking drops point
       }
     }
   }, [isPinpointMode, isDrawing, map]);
@@ -212,7 +232,7 @@ export default function LeafletMapInner({
 
   // Compute Midpoints between adjacent vertices for 1-click vertex insertion
   const midpoints = useMemo(() => {
-    if (points.length < 3 || isDrawing) return [];
+    if (points.length < 3) return [];
     const mids: { index: number; coord: [number, number] }[] = [];
     for (let i = 0; i < points.length; i++) {
       const p1 = points[i];
@@ -222,7 +242,7 @@ export default function LeafletMapInner({
       mids.push({ index: i + 1, coord: [midLat, midLon] });
     }
     return mids;
-  }, [points, isDrawing]);
+  }, [points]);
 
   return (
     <div className="relative w-full h-full">
@@ -280,7 +300,19 @@ export default function LeafletMapInner({
           />
         )}
 
-        {/* 2. Polygon Boundary Overlay */}
+        {/* 2. Boundary Polyline when only 2 points exist */}
+        {points.length === 2 && (
+          <Polyline
+            positions={points}
+            pathOptions={{
+              color: "#4A5D43",
+              weight: 3.5,
+              dashArray: "6, 6",
+            }}
+          />
+        )}
+
+        {/* 3. Filled Polygon Boundary Overlay when 3+ points exist */}
         {points.length > 2 && (
           <Polygon
             positions={points}
@@ -294,7 +326,7 @@ export default function LeafletMapInner({
           />
         )}
 
-        {/* 3. Numbered Draggable Corner Markers */}
+        {/* 4. Numbered Draggable Corner Markers */}
         {points.map((pt, idx) => (
           <Marker
             key={`vertex-${idx}-${pt[0].toFixed(5)}-${pt[1].toFixed(5)}`}
@@ -316,15 +348,15 @@ export default function LeafletMapInner({
                   {pt[0].toFixed(5)}°N, {normalizeLng(pt[1]).toFixed(5)}°E
                 </span>
                 <span className="text-[9px] text-[#4A5D43] font-semibold block">
-                  Drag to reshape boundary
+                  Drag to adjust corner position
                 </span>
-                {onVertexDelete && points.length > 3 && (
+                {onVertexDelete && (
                   <button
                     type="button"
                     onClick={() => onVertexDelete(idx)}
                     className="w-full mt-1 px-2 py-0.5 bg-red-600 hover:bg-red-700 text-white rounded-md text-[9px] font-bold transition cursor-pointer"
                   >
-                    🗑️ Delete Corner
+                    🗑️ Remove Point
                   </button>
                 )}
               </div>
@@ -332,7 +364,7 @@ export default function LeafletMapInner({
           </Marker>
         ))}
 
-        {/* 4. Midpoint '+' Handles to Insert Points Along Edges */}
+        {/* 5. Midpoint '+' Handles to Insert Points Along Edges (When 3+ points) */}
         {onInsertMidpoint &&
           midpoints.map((mid, mIdx) => (
             <Marker
@@ -356,7 +388,7 @@ export default function LeafletMapInner({
             </Marker>
           ))}
 
-        {/* 5. Target Pinpoint Dropper Marker */}
+        {/* 6. Target Pinpoint Dropper Marker */}
         {pinpointLocation && (
           <Marker
             position={pinpointLocation}
@@ -387,7 +419,7 @@ export default function LeafletMapInner({
                     onClick={() => onMoveFarmHere(pinpointLocation[0], normalizeLng(pinpointLocation[1]))}
                     className="w-full mt-1 px-2.5 py-1 bg-[#4A5D43] hover:bg-[#3A4B34] text-white rounded-md text-[10px] font-bold transition shadow-xs cursor-pointer flex items-center justify-center gap-1"
                   >
-                    <span>🎯 Move Farm Here</span>
+                    <span>🎯 Teleport Map Here</span>
                   </button>
                 )}
               </div>

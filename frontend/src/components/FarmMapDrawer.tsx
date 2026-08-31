@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useTransition, useMemo } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { 
   RotateCcw, 
@@ -24,11 +24,13 @@ import {
   Globe,
   Sun,
   ShieldCheck,
-  ChevronDown
+  CheckCircle2,
+  AlertCircle
 } from "lucide-react";
 import { 
   calculatePolygonArea, 
   calculatePerimeter, 
+  calculateDistance,
   convertAreaUnits, 
   getPolygonCenter,
   formatUnitDisplay,
@@ -69,11 +71,12 @@ export default function FarmMapDrawer({
   onPolygonChange,
   onLocationChange,
 }: FarmMapDrawerProps) {
+  // START STRICTLY WITH 0 POINTS
   const [points, setPoints] = useState<[number, number][]>([]);
+  const [isRecorded, setIsRecorded] = useState<boolean>(false);
   const [mapType, setMapType] = useState<"hybrid" | "satellite" | "esri" | "topo" | "street">("hybrid");
   const [activeUnit, setActiveUnit] = useState<"acres" | "hectares" | "gunthas" | "bighas" | "cents" | "sqm">("acres");
   const [khasraNumber, setKhasraNumber] = useState<string>("Survey #142/A");
-  const [isDrawing, setIsDrawing] = useState<boolean>(false);
   const [isPinpointMode, setIsPinpointMode] = useState<boolean>(false);
   const [pinpointLocation, setPinpointLocation] = useState<[number, number] | null>(null);
   
@@ -94,30 +97,20 @@ export default function FarmMapDrawer({
     agroZone: string;
   } | null>(null);
 
-  const initializedCenter = React.useRef<{ lat: number; lon: number }>({ lat: 0, lon: 0 });
-
   // Compute Area & Perimeter dynamically
   const areaSqMeters = useMemo(() => calculatePolygonArea(points), [points]);
   const areaUnits = useMemo(() => convertAreaUnits(areaSqMeters), [areaSqMeters]);
   const perimeterMeters = useMemo(() => calculatePerimeter(points), [points]);
-  const polygonCenter = useMemo(() => getPolygonCenter(points), [points]);
+  const polygonCenter = useMemo(() => getPolygonCenter(points.length > 0 ? points : [[centerLat, centerLon]]), [points, centerLat, centerLon]);
   const activeZone = useMemo(() => getAgroClimaticZone(polygonCenter[0], polygonCenter[1]), [polygonCenter]);
 
-  // Initialize standard square farm polygon on mount or location teleport
-  useEffect(() => {
-    const dist = Math.hypot(centerLat - initializedCenter.current.lat, centerLon - initializedCenter.current.lon);
-    if (dist > 0.0005) {
-      initializedCenter.current = { lat: centerLat, lon: centerLon };
-      const d = 0.00064 * Math.sqrt(5.0);
-      const initialPolygon: [number, number][] = [
-        [centerLat - d, centerLon - d],
-        [centerLat - d, centerLon + d],
-        [centerLat + d, centerLon + d],
-        [centerLat + d, centerLon - d],
-      ];
-      setPoints(initialPolygon);
+  // Segment Distance between points 1 and 2 if only 2 points exist
+  const segmentDistance = useMemo(() => {
+    if (points.length === 2) {
+      return Math.round(calculateDistance(points[0], points[1]));
     }
-  }, [centerLat, centerLon]);
+    return 0;
+  }, [points]);
 
   // Debounced Place Search
   useEffect(() => {
@@ -147,29 +140,59 @@ export default function FarmMapDrawer({
     };
   }, [searchQuery]);
 
-  // Notify parent of polygon updates
-  const emitPolygonChange = (newPoints: [number, number][]) => {
-    const sqM = calculatePolygonArea(newPoints);
-    const acres = Math.max(0.1, Math.round((sqM / 4046.856) * 100) / 100);
-    const converted = newPoints.map(([lat, lon]) => [lon, lat]);
-    onPolygonChange(converted, acres);
+  // Handle map click to sequentially add points 1 by 1
+  const handleMapClick = (lat: number, lon: number) => {
+    if (isPinpointMode) {
+      setPinpointLocation([lat, lon]);
+      return;
+    }
+
+    // Add point 1 by 1
+    const updated: [number, number][] = [...points, [lat, lon]];
+    setPoints(updated);
+    setIsRecorded(false);
+
+    if (updated.length >= 3) {
+      const sqM = calculatePolygonArea(updated);
+      const acres = Math.max(0.01, Math.round((sqM / 4046.856) * 100) / 100);
+      const converted = updated.map(([pLat, pLon]) => [pLon, pLat]);
+      onPolygonChange(converted, acres);
+    }
   };
 
-  const handleResetPlot = () => {
-    const d = 0.00064 * Math.sqrt(5.0);
-    const initialPolygon: [number, number][] = [
-      [centerLat - d, centerLon - d],
-      [centerLat - d, centerLon + d],
-      [centerLat + d, centerLon + d],
-      [centerLat + d, centerLon - d],
-    ];
-    setPoints(initialPolygon);
-    setIsDrawing(false);
+  // Record and Lock Farm Land Parcel
+  const handleRecordFarmLand = () => {
+    if (points.length < 3) return;
+    const sqM = calculatePolygonArea(points);
+    const acres = Math.max(0.01, Math.round((sqM / 4046.856) * 100) / 100);
+    const converted = points.map(([pLat, pLon]) => [pLon, pLat]);
+    onPolygonChange(converted, acres);
+    setIsRecorded(true);
+  };
+
+  // Clear all points back to 0
+  const handleClearAll = () => {
+    setPoints([]);
+    setIsRecorded(false);
     setPinpointLocation(null);
     setScanTelemetry(null);
-    emitPolygonChange(initialPolygon);
   };
 
+  // Undo last placed point
+  const handleUndoPoint = () => {
+    if (points.length === 0) return;
+    const updated = points.slice(0, -1);
+    setPoints(updated);
+    setIsRecorded(false);
+    if (updated.length >= 3) {
+      const sqM = calculatePolygonArea(updated);
+      const acres = Math.max(0.01, Math.round((sqM / 4046.856) * 100) / 100);
+      const converted = updated.map(([pLat, pLon]) => [pLon, pLat]);
+      onPolygonChange(converted, acres);
+    }
+  };
+
+  // Preset Template if user explicitly wants a quick box
   const handleApplyPresetSize = (acres: number) => {
     const d = 0.00064 * Math.sqrt(acres);
     const newPolygon: [number, number][] = [
@@ -179,83 +202,66 @@ export default function FarmMapDrawer({
       [centerLat + d, centerLon - d],
     ];
     setPoints(newPolygon);
-    setIsDrawing(false);
-    emitPolygonChange(newPolygon);
+    setIsRecorded(false);
+    const converted = newPolygon.map(([pLat, pLon]) => [pLon, pLat]);
+    onPolygonChange(converted, acres);
   };
 
   const handleSelectPresetLocation = (place: IndianPlace) => {
     if (onLocationChange) {
       onLocationChange(place.lat, place.lon, place.name);
     }
-    const d = 0.00064 * Math.sqrt(areaUnits.acres || 5.0);
-    const newPolygon: [number, number][] = [
-      [place.lat - d, place.lon - d],
-      [place.lat - d, place.lon + d],
-      [place.lat + d, place.lon + d],
-      [place.lat + d, place.lon - d],
-    ];
-    setPoints(newPolygon);
     setSearchQuery("");
     setShowSearchDropdown(false);
-    emitPolygonChange(newPolygon);
   };
 
   const handleVertexDrag = (index: number, newPos: [number, number]) => {
     const updated: [number, number][] = [...points];
     updated[index] = newPos;
     setPoints(updated);
-    emitPolygonChange(updated);
+    setIsRecorded(false);
+    if (updated.length >= 3) {
+      const sqM = calculatePolygonArea(updated);
+      const acres = Math.max(0.01, Math.round((sqM / 4046.856) * 100) / 100);
+      const converted = updated.map(([pLat, pLon]) => [pLon, pLat]);
+      onPolygonChange(converted, acres);
+    }
   };
 
   const handleVertexDelete = (index: number) => {
-    if (points.length <= 3) return;
     const updated = points.filter((_, idx) => idx !== index);
     setPoints(updated);
-    emitPolygonChange(updated);
+    setIsRecorded(false);
+    if (updated.length >= 3) {
+      const sqM = calculatePolygonArea(updated);
+      const acres = Math.max(0.01, Math.round((sqM / 4046.856) * 100) / 100);
+      const converted = updated.map(([pLat, pLon]) => [pLon, pLat]);
+      onPolygonChange(converted, acres);
+    }
   };
 
   const handleInsertMidpoint = (insertIndex: number, coord: [number, number]) => {
     const updated = [...points];
     updated.splice(insertIndex, 0, coord);
     setPoints(updated);
-    emitPolygonChange(updated);
-  };
-
-  const handleUndoLastPoint = () => {
-    if (points.length <= 3) return;
-    const updated = points.slice(0, -1);
-    setPoints(updated);
-    emitPolygonChange(updated);
-  };
-
-  const handleMapClick = (lat: number, lon: number) => {
-    if (isDrawing) {
-      const updated: [number, number][] = [...points, [lat, lon]];
-      setPoints(updated);
-      emitPolygonChange(updated);
-    } else {
-      setPinpointLocation([lat, lon]);
-    }
+    setIsRecorded(false);
+    const sqM = calculatePolygonArea(updated);
+    const acres = Math.max(0.01, Math.round((sqM / 4046.856) * 100) / 100);
+    const converted = updated.map(([pLat, pLon]) => [pLon, pLat]);
+    onPolygonChange(converted, acres);
   };
 
   const handleMoveFarmHere = (lat: number, lon: number) => {
     if (onLocationChange) {
       onLocationChange(lat, lon, `Farm Plot (${lat.toFixed(4)}°N, ${lon.toFixed(4)}°E)`);
     }
-    const d = 0.00064 * Math.sqrt(areaUnits.acres || 5.0);
-    const newPolygon: [number, number][] = [
-      [lat - d, lon - d],
-      [lat - d, lon + d],
-      [lat + d, lon + d],
-      [lat + d, lon - d],
-    ];
-    setPoints(newPolygon);
     setPinpointLocation(null);
-    emitPolygonChange(newPolygon);
+    setIsPinpointMode(false);
   };
 
   // Run AI Land Parcel Scan Simulation
   const handleScanLand = () => {
+    if (points.length < 3) return;
     setIsScanning(true);
     setScanProgress(0);
     const interval = setInterval(() => {
@@ -305,6 +311,7 @@ export default function FarmMapDrawer({
             major_crops: activeZone.majorCrops,
             center_latitude: polygonCenter[0],
             center_longitude: polygonCenter[1],
+            total_vertices: points.length,
             compliance: "PMFBY Compliant Field Cadastral",
             generated_by: "AgriSense AI",
             timestamp: new Date().toISOString()
@@ -340,7 +347,7 @@ export default function FarmMapDrawer({
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
     <name>${farmName}</name>
-    <description>Khasra: ${khasraNumber} | Area: ${areaUnits.acres} Acres (${areaUnits.hectares} Ha) | Zone: ${activeZone.name}</description>
+    <description>Khasra: ${khasraNumber} | Area: ${areaUnits.acres} Acres (${areaUnits.hectares} Ha) | Vertices: ${points.length} | Zone: ${activeZone.name}</description>
     <Placemark>
       <name>${farmName} Cadastral Boundary</name>
       <Polygon>
@@ -373,7 +380,7 @@ export default function FarmMapDrawer({
       {/* 1. TOP INTERACTIVE TOOLBAR & SEARCH BAR */}
       <div className="p-3.5 sm:p-4 rounded-2xl bg-[#FEFEFA] border border-[#E5E0D5] shadow-soft flex flex-col gap-3">
         
-        {/* Row 1: Location Search & Preset Estates */}
+        {/* Row 1: Location Search & Preset Indian Agricultural Towns */}
         <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
           
           {/* Search Input with Autocomplete */}
@@ -387,7 +394,7 @@ export default function FarmMapDrawer({
                 onFocus={() => {
                   if (searchResults.length > 0) setShowSearchDropdown(true);
                 }}
-                placeholder="Search Indian farm, mandi, district or PIN..."
+                placeholder="Search farm location, mandi, district or PIN..."
                 className="w-full bg-transparent text-xs text-[#2C2C24] focus:outline-none placeholder:text-stone-400 font-medium"
               />
               {isSearching && <Crosshair className="w-3.5 h-3.5 animate-spin text-[#4A5D43]" />}
@@ -421,9 +428,9 @@ export default function FarmMapDrawer({
             )}
           </div>
 
-          {/* Preset Farm Estates Quick Pills */}
+          {/* Quick Presets */}
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[10px] font-bold text-[#78786C] uppercase tracking-wider shrink-0">Presets:</span>
+            <span className="text-[10px] font-bold text-[#78786C] uppercase tracking-wider shrink-0">Jump To:</span>
             {INDIAN_AGRICULTURAL_PLACES.slice(0, 4).map((estate) => (
               <button
                 key={estate.name}
@@ -441,7 +448,7 @@ export default function FarmMapDrawer({
         {/* Row 2: Metrics, Unit Switcher, Layers & Action Buttons */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pt-2 border-t border-[#E5E0D5]/70">
           
-          {/* Left: Farm Name, Khasra, Area & Unit Pills */}
+          {/* Left: Farm Survey Tag, Points Count & Land Area Readout */}
           <div className="flex items-center gap-2.5 flex-wrap">
             <div className="flex items-center gap-1.5 bg-[#FAF8F3] px-2.5 py-1 rounded-lg border border-[#E5E0D5]">
               <Tag className="w-3 h-3 text-[#4A5D43] shrink-0" />
@@ -454,47 +461,41 @@ export default function FarmMapDrawer({
               />
             </div>
 
+            {/* Points Counter Badge */}
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#FAF8F3] border border-[#E5E0D5] text-xs font-bold">
+              <span className={`w-2 h-2 rounded-full ${points.length >= 3 ? "bg-emerald-500 animate-pulse" : points.length > 0 ? "bg-amber-500" : "bg-stone-400"}`}></span>
+              <span className="text-[#2C2C24] font-mono">
+                {points.length} {points.length === 1 ? "Corner" : "Corners"} Placed
+              </span>
+            </div>
+
             {/* Active Land Measurement Area Badge */}
-            <div className="flex items-center gap-1 bg-[#FAF8F3] px-2.5 py-1 rounded-lg border border-[#E5E0D5] text-xs font-bold text-[#4A5D43]">
-              <span>🌾 {formatUnitDisplay(areaUnits, activeUnit)}</span>
-            </div>
+            {points.length >= 3 && (
+              <div className="flex items-center gap-1 bg-emerald-50 text-emerald-800 px-2.5 py-1 rounded-lg border border-emerald-200 text-xs font-bold animate-in fade-in">
+                <span>🌾 {formatUnitDisplay(areaUnits, activeUnit)}</span>
+              </div>
+            )}
 
-            {/* Indian Land Unit Selector */}
-            <div className="bg-[#EAE6DE] p-0.5 rounded-lg flex items-center border border-[#DAD5C9]">
-              {(["acres", "hectares", "gunthas", "bighas", "cents"] as const).map((unit) => (
-                <button
-                  key={unit}
-                  type="button"
-                  onClick={() => setActiveUnit(unit)}
-                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold capitalize transition cursor-pointer ${
-                    activeUnit === unit ? "bg-[#4A5D43] text-white shadow-xs" : "text-[#4A5D43]"
-                  }`}
-                >
-                  {unit === "hectares" ? "Ha" : unit}
-                </button>
-              ))}
-            </div>
-
-            {/* Acreage Presets */}
-            <div className="flex items-center gap-1">
-              {[1.0, 2.5, 5.0, 10.0].map((acres) => (
-                <button
-                  key={acres}
-                  type="button"
-                  onClick={() => handleApplyPresetSize(acres)}
-                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition cursor-pointer ${
-                    Math.abs(areaUnits.acres - acres) < 0.2
-                      ? "bg-[#4A5D43] text-white shadow-xs"
-                      : "bg-[#F0EBE5] text-[#2C2C24] hover:bg-[#E5DFD7] border border-[#DED8CF]"
-                  }`}
-                >
-                  {acres} Ac
-                </button>
-              ))}
-            </div>
+            {/* Indian Land Unit Selector (Visible when 3+ points exist) */}
+            {points.length >= 3 && (
+              <div className="bg-[#EAE6DE] p-0.5 rounded-lg flex items-center border border-[#DAD5C9]">
+                {(["acres", "hectares", "gunthas", "bighas", "cents"] as const).map((unit) => (
+                  <button
+                    key={unit}
+                    type="button"
+                    onClick={() => setActiveUnit(unit)}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold capitalize transition cursor-pointer ${
+                      activeUnit === unit ? "bg-[#4A5D43] text-white shadow-xs" : "text-[#4A5D43]"
+                    }`}
+                  >
+                    {unit === "hectares" ? "Ha" : unit}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* Right: Map Layers, Draw Tools, AI Land Scanner & Export */}
+          {/* Right: Map Layers, Point Actions & Record Button */}
           <div className="flex items-center gap-1.5 flex-wrap">
             
             {/* Map Layer Switcher */}
@@ -534,10 +535,7 @@ export default function FarmMapDrawer({
             {/* Pinpoint Mode */}
             <button
               type="button"
-              onClick={() => {
-                setIsPinpointMode(!isPinpointMode);
-                setIsDrawing(false);
-              }}
+              onClick={() => setIsPinpointMode(!isPinpointMode)}
               className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold transition cursor-pointer border ${
                 isPinpointMode
                   ? "bg-red-600 text-white border-red-600 shadow-xs animate-pulse"
@@ -549,80 +547,86 @@ export default function FarmMapDrawer({
               <span>{isPinpointMode ? "Targeting..." : "Pinpoint"}</span>
             </button>
 
-            {/* Add Corners Drawing Mode */}
-            <button
-              type="button"
-              onClick={() => {
-                setIsDrawing(!isDrawing);
-                setIsPinpointMode(false);
-              }}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold transition cursor-pointer border ${
-                isDrawing
-                  ? "bg-amber-600 text-white border-amber-600 shadow-xs animate-pulse"
-                  : "bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#4A5D43] border-[#E5E0D5]"
-              }`}
-              title="Click on map to sequentially add boundary vertices"
-            >
-              <PenTool className="w-3.5 h-3.5" />
-              <span>{isDrawing ? "Adding..." : "Add Corners"}</span>
-            </button>
-
             {/* Undo Last Point */}
-            {points.length > 3 && (
+            {points.length > 0 && (
               <button
                 type="button"
-                onClick={handleUndoLastPoint}
-                className="flex items-center gap-1 px-2 py-1 rounded-xl text-[10px] font-bold text-[#78786C] hover:text-[#2C2C24] hover:bg-[#F0EBE5] transition cursor-pointer border border-[#E5E0D5]"
+                onClick={handleUndoPoint}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold text-[#78786C] hover:text-[#2C2C24] hover:bg-[#F0EBE5] transition cursor-pointer border border-[#E5E0D5]"
                 title="Undo last point"
               >
-                <RotateCcw className="w-3 h-3" />
-                <span>Undo</span>
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Undo Point</span>
               </button>
             )}
 
-            {/* Reset */}
-            <button
-              type="button"
-              onClick={handleResetPlot}
-              className="flex items-center gap-1 px-2 py-1 rounded-xl text-[10px] font-bold text-[#78786C] hover:text-[#2C2C24] hover:bg-[#F0EBE5] transition cursor-pointer border border-[#E5E0D5]"
-              title="Reset to standard square polygon"
-            >
-              <RotateCcw className="w-3 h-3" />
-              <span>Reset</span>
-            </button>
+            {/* Clear All Points */}
+            {points.length > 0 && (
+              <button
+                type="button"
+                onClick={handleClearAll}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold text-red-600 hover:bg-red-50 transition cursor-pointer border border-red-200"
+                title="Clear all points to start over"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear</span>
+              </button>
+            )}
 
-            {/* AI Land Scan Button */}
-            <button
-              type="button"
-              onClick={handleScanLand}
-              disabled={isScanning}
-              className="flex items-center gap-1 px-3 py-1 rounded-xl text-[11px] font-bold bg-[#4A5D43] hover:bg-[#3A4B34] text-white shadow-xs transition cursor-pointer"
-            >
-              <Sparkles className={`w-3.5 h-3.5 ${isScanning ? "animate-spin" : ""}`} />
-              <span>{isScanning ? `Scanning ${scanProgress}%` : "Scan Parcel"}</span>
-            </button>
+            {/* RECORD & CONFIRM FARM LAND BUTTON (Prominent when 3+ points) */}
+            {points.length >= 3 && (
+              <button
+                type="button"
+                onClick={handleRecordFarmLand}
+                className={`flex items-center gap-1.5 px-3.5 py-1 rounded-xl text-[11px] font-bold transition shadow-xs cursor-pointer ${
+                  isRecorded
+                    ? "bg-emerald-700 text-white"
+                    : "bg-[#4A5D43] hover:bg-[#3A4B34] text-white animate-pulse"
+                }`}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>{isRecorded ? "✅ Land Recorded" : "Confirm & Record Land"}</span>
+              </button>
+            )}
+
+            {/* AI Scan Land Button (When 3+ points) */}
+            {points.length >= 3 && (
+              <button
+                type="button"
+                onClick={handleScanLand}
+                disabled={isScanning}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#4A5D43] border border-[#E5E0D5] transition cursor-pointer"
+              >
+                <Sparkles className={`w-3.5 h-3.5 ${isScanning ? "animate-spin" : ""}`} />
+                <span>{isScanning ? `${scanProgress}%` : "Scan"}</span>
+              </button>
+            )}
 
             {/* Export GeoJSON */}
-            <button
-              type="button"
-              onClick={handleExportGeoJSON}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-xl text-[10px] font-bold bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#4A5D43] border border-[#E5E0D5] transition cursor-pointer"
-              title="Export PMFBY GeoJSON"
-            >
-              <Download className="w-3 h-3" />
-              <span>GeoJSON</span>
-            </button>
+            {points.length >= 3 && (
+              <button
+                type="button"
+                onClick={handleExportGeoJSON}
+                className="flex items-center gap-1 px-2 py-1 rounded-xl text-[10px] font-bold bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#4A5D43] border border-[#E5E0D5] transition cursor-pointer"
+                title="Export PMFBY GeoJSON"
+              >
+                <Download className="w-3 h-3" />
+                <span>GeoJSON</span>
+              </button>
+            )}
 
             {/* Export KML */}
-            <button
-              type="button"
-              onClick={handleExportKML}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-xl text-[10px] font-bold bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#4A5D43] border border-[#E5E0D5] transition cursor-pointer"
-              title="Export Google Earth KML"
-            >
-              <FileCode className="w-3 h-3" />
-              <span>KML</span>
-            </button>
+            {points.length >= 3 && (
+              <button
+                type="button"
+                onClick={handleExportKML}
+                className="flex items-center gap-1 px-2 py-1 rounded-xl text-[10px] font-bold bg-[#FAF8F3] hover:bg-[#F0EBE5] text-[#4A5D43] border border-[#E5E0D5] transition cursor-pointer"
+                title="Export Google Earth KML"
+              >
+                <FileCode className="w-3 h-3" />
+                <span>KML</span>
+              </button>
+            )}
 
           </div>
 
@@ -630,7 +634,75 @@ export default function FarmMapDrawer({
 
       </div>
 
-      {/* 2. AI LAND SCAN DIAGNOSTIC TELEMETRY (Appears after Scanning) */}
+      {/* 2. INTERACTIVE STEP-BY-STEP HUD GUIDE BANNER */}
+      <div className={`px-4 py-2.5 rounded-2xl border text-xs font-semibold flex items-center justify-between transition-all ${
+        points.length === 0 
+          ? "bg-amber-50 border-amber-200 text-amber-900"
+          : points.length === 1 
+          ? "bg-blue-50 border-blue-200 text-blue-900"
+          : points.length === 2 
+          ? "bg-indigo-50 border-indigo-200 text-indigo-900"
+          : isRecorded
+          ? "bg-emerald-50 border-emerald-300 text-emerald-900"
+          : "bg-emerald-50 border-emerald-200 text-emerald-900"
+      }`}>
+        <div className="flex items-center gap-2">
+          {points.length === 0 ? (
+            <>
+              <Crosshair className="w-4 h-4 text-amber-600 animate-spin" />
+              <span>
+                <b>Step 1:</b> Click anywhere on the satellite imagery to place <b>Corner #1</b> of your farm land.
+              </span>
+            </>
+          ) : points.length === 1 ? (
+            <>
+              <MapPin className="w-4 h-4 text-blue-600 animate-bounce" />
+              <span>
+                <b>Corner #1 Placed!</b> Click the next field boundary corner to place <b>Corner #2</b>.
+              </span>
+            </>
+          ) : points.length === 2 ? (
+            <>
+              <Ruler className="w-4 h-4 text-indigo-600" />
+              <span>
+                <b>Line Segment Placed ({segmentDistance} meters).</b> Click to place <b>Corner #3</b> to form your farm polygon!
+              </span>
+            </>
+          ) : isRecorded ? (
+            <>
+              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              <span>
+                <b>Farm Land Locked & Recorded!</b> Area: <b>{formatUnitDisplay(areaUnits, activeUnit)}</b> ({perimeterMeters}m perimeter, {points.length} boundary points).
+              </span>
+            </>
+          ) : (
+            <>
+              <Sparkles className="w-4 h-4 text-emerald-600" />
+              <span>
+                <b>{points.length} Corners Placed</b> • Area: <b>{formatUnitDisplay(areaUnits, activeUnit)}</b>. Click to add more corners or click <b>&ldquo;Confirm &amp; Record Land&rdquo;</b>.
+              </span>
+            </>
+          )}
+        </div>
+
+        {points.length === 0 && (
+          <div className="hidden sm:flex items-center gap-1 text-[10px] text-amber-700">
+            <span>Or quick box:</span>
+            {[1.0, 2.5, 5.0].map((ac) => (
+              <button
+                key={ac}
+                type="button"
+                onClick={() => handleApplyPresetSize(ac)}
+                className="px-1.5 py-0.5 rounded-md bg-amber-200/60 hover:bg-amber-200 text-amber-900 font-bold cursor-pointer"
+              >
+                {ac}Ac
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 3. AI LAND SCAN DIAGNOSTIC TELEMETRY (Appears after Scanning) */}
       {scanTelemetry && (
         <div className="p-3.5 rounded-2xl bg-[#FEFEFA] border border-[#4A5D43]/30 shadow-soft animate-in fade-in slide-in-from-top-2">
           <div className="flex items-center justify-between mb-2">
@@ -671,7 +743,7 @@ export default function FarmMapDrawer({
         </div>
       )}
 
-      {/* 3. 100% UNOBSTRUCTED HIGH-RES MAP CANVAS */}
+      {/* 4. 100% UNOBSTRUCTED HIGH-RES MAP CANVAS */}
       <div className="relative w-full h-[530px] rounded-[2rem] overflow-hidden border border-[#DED8CF] shadow-soft-lg bg-[#F0EBE5]">
         
         <LeafletMapInner
@@ -681,7 +753,7 @@ export default function FarmMapDrawer({
           points={points}
           mapType={mapType}
           areaAcres={areaUnits.acres}
-          isDrawing={isDrawing}
+          isDrawing={false}
           isPinpointMode={isPinpointMode}
           pinpointLocation={pinpointLocation}
           onVertexDrag={handleVertexDrag}
@@ -707,7 +779,7 @@ export default function FarmMapDrawer({
               onClick={() => handleMoveFarmHere(pinpointLocation[0], pinpointLocation[1])}
               className="px-3 py-1 bg-[#4A5D43] hover:bg-[#3A4B34] text-white rounded-full text-[11px] font-bold transition shadow-xs cursor-pointer flex items-center gap-1"
             >
-              <span>🎯 Move Farm Plot Here</span>
+              <span>🎯 Move Center Here</span>
             </button>
 
             <button
