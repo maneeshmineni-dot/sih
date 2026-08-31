@@ -30,47 +30,26 @@ const normalizeLng = (lng: number): number => {
 };
 
 // Custom Numbered Corner Pin (Leaflet divIcon)
-const createVertexIcon = (index: number, total: number) => {
-  const isFirst = index === 0;
+const createVertexIcon = (index: number) => {
   return L.divIcon({
     className: "custom-vertex-icon",
     html: `<div style="
-      position: relative;
       width: 28px;
       height: 28px;
+      background: #4A5D43;
+      color: #FFFFFF;
+      border: 2.5px solid #FFFFFF;
+      border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
+      font-size: 11px;
+      font-weight: 800;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
       cursor: grab;
-      touch-action: none;
-    ">
-      ${total === 1 || (total === 2 && isFirst) ? `
-      <div style="
-        position: absolute;
-        width: 38px;
-        height: 38px;
-        border-radius: 50%;
-        background: rgba(74, 93, 67, 0.35);
-        animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
-        pointer-events: none;
-      "></div>` : ''}
-      <div style="
-        width: 26px;
-        height: 26px;
-        background: ${isFirst ? '#385723' : '#4A5D43'};
-        color: #FEFEFA;
-        border: 2.5px solid #FFFFFF;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 11px;
-        font-weight: 800;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.5);
-        cursor: grab;
-        user-select: none;
-      ">${index + 1}</div>
-    </div>`,
+      user-select: none;
+      pointer-events: auto;
+    ">${index + 1}</div>`,
     iconSize: [28, 28],
     iconAnchor: [14, 14],
   });
@@ -94,7 +73,8 @@ const createMidpointIcon = () => {
       font-weight: bold;
       box-shadow: 0 2px 6px rgba(0,0,0,0.3);
       cursor: pointer;
-      opacity: 0.9;
+      pointer-events: auto;
+      opacity: 0.95;
     ">+</div>`,
     iconSize: [20, 20],
     iconAnchor: [10, 10],
@@ -120,6 +100,7 @@ const createPinpointIcon = () => {
         border-radius: 50%;
         background: rgba(220, 38, 38, 0.4);
         animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+        pointer-events: none;
       "></div>
       <div style="
         width: 26px;
@@ -141,34 +122,30 @@ const createPinpointIcon = () => {
   });
 };
 
-function MapCenterController({ center }: { center: [number, number] }) {
+function MapCenterController({ centerLat, centerLon }: { centerLat: number; centerLon: number }) {
   const map = useMap();
-  const lastCenter = React.useRef<[number, number]>([0, 0]);
+  const lastCenter = React.useRef<{ lat: number; lon: number }>({ lat: 0, lon: 0 });
 
   useEffect(() => {
     if (!map) return;
-    const dist = Math.hypot(center[0] - lastCenter.current[0], center[1] - lastCenter.current[1]);
-    if (dist > 0.0008) {
-      lastCenter.current = [center[0], center[1]];
-      map.setView(center, map.getZoom() || 16, { animate: true });
+    const dist = Math.hypot(centerLat - lastCenter.current.lat, centerLon - lastCenter.current.lon);
+    if (dist > 0.005) {
+      lastCenter.current = { lat: centerLat, lon: centerLon };
+      map.setView([centerLat, normalizeLng(centerLon)], map.getZoom() || 16, { animate: true });
     }
-  }, [center, map]);
+  }, [centerLat, centerLon, map]);
 
   return null;
 }
 
 function MapInteractionHandler({
-  isDrawing,
-  isPinpointMode,
   onMapClick,
   onHoverCoords,
 }: {
-  isDrawing: boolean;
-  isPinpointMode: boolean;
   onMapClick: (lat: number, lon: number) => void;
   onHoverCoords: (lat: number, lon: number) => void;
 }) {
-  const map = useMapEvents({
+  useMapEvents({
     click: (e) => {
       const normalizedLon = normalizeLng(e.latlng.lng);
       onMapClick(e.latlng.lat, normalizedLon);
@@ -178,17 +155,6 @@ function MapInteractionHandler({
       onHoverCoords(e.latlng.lat, normalizedLon);
     },
   });
-
-  useEffect(() => {
-    if (map) {
-      const container = map.getContainer();
-      if (isPinpointMode || isDrawing) {
-        container.style.cursor = "crosshair";
-      } else {
-        container.style.cursor = "crosshair";
-      }
-    }
-  }, [isPinpointMode, isDrawing, map]);
 
   return null;
 }
@@ -260,10 +226,8 @@ export default function LeafletMapInner({
         doubleClickZoom={true}
         className="w-full h-full"
       >
-        <MapCenterController center={[centerLat, normalizeLng(centerLon)]} />
+        <MapCenterController centerLat={centerLat} centerLon={centerLon} />
         <MapInteractionHandler
-          isDrawing={isDrawing}
-          isPinpointMode={isPinpointMode}
           onMapClick={onMapClick}
           onHoverCoords={(lat, lon) => setHoverCoords({ lat, lon })}
         />
@@ -342,26 +306,20 @@ export default function LeafletMapInner({
           />
         )}
 
-        {/* 4. Numbered Draggable Corner Markers with Stable Keys */}
+        {/* 4. Numbered Draggable Corner Markers */}
         {points.map((pt, idx) => (
           <Marker
             key={`vertex-handle-${idx}`}
             position={pt}
             draggable={true}
             autoPan={false}
-            icon={createVertexIcon(idx, points.length)}
+            icon={createVertexIcon(idx)}
             eventHandlers={{
               click: (e) => {
                 L.DomEvent.stopPropagation(e);
               },
               dragstart: (e) => {
                 L.DomEvent.stopPropagation(e);
-              },
-              drag: (e) => {
-                L.DomEvent.stopPropagation(e);
-                const marker = e.target;
-                const position = marker.getLatLng();
-                onVertexDrag(idx, [position.lat, normalizeLng(position.lng)]);
               },
               dragend: (e) => {
                 L.DomEvent.stopPropagation(e);
@@ -378,7 +336,7 @@ export default function LeafletMapInner({
                   {pt[0].toFixed(5)}°N, {normalizeLng(pt[1]).toFixed(5)}°E
                 </span>
                 <span className="text-[9px] text-[#4A5D43] font-semibold block">
-                  ✋ Drag to move this corner
+                  ✋ Drag to reposition corner
                 </span>
                 {onVertexDelete && (
                   <button
@@ -389,7 +347,7 @@ export default function LeafletMapInner({
                     }}
                     className="w-full mt-1 px-2 py-0.5 bg-red-600 hover:bg-red-700 text-white rounded-md text-[9px] font-bold transition cursor-pointer"
                   >
-                    🗑️ Remove Point
+                    🗑️ Delete Corner
                   </button>
                 )}
               </div>
@@ -436,14 +394,6 @@ export default function LeafletMapInner({
               },
               dragstart: (e) => {
                 L.DomEvent.stopPropagation(e);
-              },
-              drag: (e) => {
-                L.DomEvent.stopPropagation(e);
-                const marker = e.target;
-                const pos = marker.getLatLng();
-                if (onPinpointDrag) {
-                  onPinpointDrag([pos.lat, normalizeLng(pos.lng)]);
-                }
               },
               dragend: (e) => {
                 L.DomEvent.stopPropagation(e);
