@@ -1,0 +1,28 @@
+name: Keep Render Backend Alive (Anti-Sleep)
+
+on:
+  schedule:
+    # Runs every 12 minutes to beat Render's 15-minute inactivity timer
+    - cron: '*/12 * * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  keep-alive:
+    name: Health Check Ping
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Backend Service
+        env:
+          BACKEND_URL: ${{ secrets.RENDER_BACKEND_URL || vars.RENDER_BACKEND_URL }}
+        run: |
+          TARGET_URL="${BACKEND_URL:-https://agrisense-backend.onrender.com}"
+          ENDPOINT="${TARGET_URL%/}/api/health"
+          echo "Sending keep-alive ping to: $ENDPOINT"
+          
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 45 "$ENDPOINT" || echo "000")
+          
+          if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 400 ]; then
+            echo "✅ Server is ALIVE! (HTTP Status: $STATUS)"
+          else
+            echo "⚠️ Ping received status $STATUS (or instance is currently waking up)"
+          fi

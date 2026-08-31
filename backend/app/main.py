@@ -7,6 +7,8 @@ import logging
 import uvicorn
 import asyncio
 import os
+from contextlib import asynccontextmanager
+import httpx
 
 from .config import settings
 from .services.weather_engine import WeatherEngine
@@ -19,10 +21,55 @@ from .services.db_service import DatabaseService
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+async def keep_alive_background_task():
+    """
+    Automatic self-ping service to prevent cloud platforms (e.g. Render Free Tier) 
+    from sleeping after 15 minutes of inactivity.
+    Render automatically injects 'RENDER_EXTERNAL_URL'.
+    """
+    external_url = (
+        os.getenv("RENDER_EXTERNAL_URL")
+        or os.getenv("BACKEND_SELF_PING_URL")
+        or os.getenv("BACKEND_URL")
+    )
+    if not external_url:
+        logger.info("[Keep-Alive] No external URL detected. Self-ping idle in local environment.")
+        return
+
+    health_url = f"{external_url.rstrip('/')}/api/health"
+    logger.info(f"[Keep-Alive] Active! Keeping instance alive via {health_url} (every 10m).")
+
+    # Initial wait after cold start
+    await asyncio.sleep(60)
+
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                res = await client.get(health_url)
+                logger.info(f"[Keep-Alive] Auto-ping succeeded [HTTP {res.status_code}]")
+        except Exception as e:
+            logger.warning(f"[Keep-Alive] Auto-ping warning: {e}")
+        
+        # Ping every 10 minutes (600s) -> prevents 15-minute inactivity timeout
+        await asyncio.sleep(600)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start keep-alive loop on startup
+    ping_task = asyncio.create_task(keep_alive_background_task())
+    yield
+    # Cleanup on shutdown
+    ping_task.cancel()
+    try:
+        await ping_task
+    except asyncio.CancelledError:
+        pass
+
 app = FastAPI(
     title="AgriSense AI API",
     description="100% Real-Data Multimodal Precision Agriculture & Decision Support Engine",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # CORS configuration for Next.js frontend
