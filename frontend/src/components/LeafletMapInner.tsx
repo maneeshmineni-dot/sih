@@ -6,7 +6,7 @@ import {
   TileLayer, 
   Marker, 
   Polygon, 
-  Polyline,
+  Polyline, 
   Popup, 
   useMap, 
   useMapEvents 
@@ -41,6 +41,8 @@ const createVertexIcon = (index: number, total: number) => {
       display: flex;
       align-items: center;
       justify-content: center;
+      cursor: grab;
+      touch-action: none;
     ">
       ${total === 1 || (total === 2 && isFirst) ? `
       <div style="
@@ -50,22 +52,23 @@ const createVertexIcon = (index: number, total: number) => {
         border-radius: 50%;
         background: rgba(74, 93, 67, 0.35);
         animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+        pointer-events: none;
       "></div>` : ''}
       <div style="
         width: 26px;
         height: 26px;
         background: ${isFirst ? '#385723' : '#4A5D43'};
         color: #FEFEFA;
-        border: 2px solid #FEFEFA;
+        border: 2.5px solid #FFFFFF;
         border-radius: 50%;
         display: flex;
         align-items: center;
         justify-content: center;
         font-size: 11px;
         font-weight: 800;
-        box-shadow: 0 3px 8px rgba(0,0,0,0.45);
+        box-shadow: 0 4px 10px rgba(0,0,0,0.5);
         cursor: grab;
-        transition: transform 0.15s ease;
+        user-select: none;
       ">${index + 1}</div>
     </div>`,
     iconSize: [28, 28],
@@ -92,7 +95,6 @@ const createMidpointIcon = () => {
       box-shadow: 0 2px 6px rgba(0,0,0,0.3);
       cursor: pointer;
       opacity: 0.9;
-      transition: all 0.2s ease;
     ">+</div>`,
     iconSize: [20, 20],
     iconAnchor: [10, 10],
@@ -183,7 +185,7 @@ function MapInteractionHandler({
       if (isPinpointMode || isDrawing) {
         container.style.cursor = "crosshair";
       } else {
-        container.style.cursor = "crosshair"; // Keep crosshair active so user knows clicking drops point
+        container.style.cursor = "crosshair";
       }
     }
   }, [isPinpointMode, isDrawing, map]);
@@ -309,6 +311,13 @@ export default function LeafletMapInner({
               weight: 3.5,
               dashArray: "6, 6",
             }}
+            eventHandlers={{
+              click: (e) => {
+                const lat = e.latlng.lat;
+                const lon = normalizeLng(e.latlng.lng);
+                onMapClick(lat, lon);
+              }
+            }}
           />
         )}
 
@@ -323,18 +332,39 @@ export default function LeafletMapInner({
               fillOpacity: 0.35,
               dashArray: "6, 6",
             }}
+            eventHandlers={{
+              click: (e) => {
+                const lat = e.latlng.lat;
+                const lon = normalizeLng(e.latlng.lng);
+                onMapClick(lat, lon);
+              }
+            }}
           />
         )}
 
-        {/* 4. Numbered Draggable Corner Markers */}
+        {/* 4. Numbered Draggable Corner Markers with Stable Keys */}
         {points.map((pt, idx) => (
           <Marker
-            key={`vertex-${idx}-${pt[0].toFixed(5)}-${pt[1].toFixed(5)}`}
+            key={`vertex-handle-${idx}`}
             position={pt}
             draggable={true}
+            autoPan={false}
             icon={createVertexIcon(idx, points.length)}
             eventHandlers={{
+              click: (e) => {
+                L.DomEvent.stopPropagation(e);
+              },
+              dragstart: (e) => {
+                L.DomEvent.stopPropagation(e);
+              },
+              drag: (e) => {
+                L.DomEvent.stopPropagation(e);
+                const marker = e.target;
+                const position = marker.getLatLng();
+                onVertexDrag(idx, [position.lat, normalizeLng(position.lng)]);
+              },
               dragend: (e) => {
+                L.DomEvent.stopPropagation(e);
                 const marker = e.target;
                 const position = marker.getLatLng();
                 onVertexDrag(idx, [position.lat, normalizeLng(position.lng)]);
@@ -348,12 +378,15 @@ export default function LeafletMapInner({
                   {pt[0].toFixed(5)}°N, {normalizeLng(pt[1]).toFixed(5)}°E
                 </span>
                 <span className="text-[9px] text-[#4A5D43] font-semibold block">
-                  Drag to adjust corner position
+                  ✋ Drag to move this corner
                 </span>
                 {onVertexDelete && (
                   <button
                     type="button"
-                    onClick={() => onVertexDelete(idx)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onVertexDelete(idx);
+                    }}
                     className="w-full mt-1 px-2 py-0.5 bg-red-600 hover:bg-red-700 text-white rounded-md text-[9px] font-bold transition cursor-pointer"
                   >
                     🗑️ Remove Point
@@ -364,15 +397,16 @@ export default function LeafletMapInner({
           </Marker>
         ))}
 
-        {/* 5. Midpoint '+' Handles to Insert Points Along Edges (When 3+ points) */}
+        {/* 5. Midpoint '+' Handles to Insert Points Along Edges */}
         {onInsertMidpoint &&
           midpoints.map((mid, mIdx) => (
             <Marker
-              key={`midpoint-${mIdx}-${mid.coord[0].toFixed(5)}-${mid.coord[1].toFixed(5)}`}
+              key={`midpoint-${mIdx}`}
               position={mid.coord}
               icon={createMidpointIcon()}
               eventHandlers={{
-                click: () => {
+                click: (e) => {
+                  L.DomEvent.stopPropagation(e);
                   onInsertMidpoint(mid.index, mid.coord);
                 },
               }}
@@ -391,11 +425,28 @@ export default function LeafletMapInner({
         {/* 6. Target Pinpoint Dropper Marker */}
         {pinpointLocation && (
           <Marker
+            key="target-pinpoint"
             position={pinpointLocation}
             draggable={true}
+            autoPan={false}
             icon={createPinpointIcon()}
             eventHandlers={{
+              click: (e) => {
+                L.DomEvent.stopPropagation(e);
+              },
+              dragstart: (e) => {
+                L.DomEvent.stopPropagation(e);
+              },
+              drag: (e) => {
+                L.DomEvent.stopPropagation(e);
+                const marker = e.target;
+                const pos = marker.getLatLng();
+                if (onPinpointDrag) {
+                  onPinpointDrag([pos.lat, normalizeLng(pos.lng)]);
+                }
+              },
               dragend: (e) => {
+                L.DomEvent.stopPropagation(e);
                 const marker = e.target;
                 const pos = marker.getLatLng();
                 if (onPinpointDrag) {
@@ -416,7 +467,10 @@ export default function LeafletMapInner({
                 {onMoveFarmHere && (
                   <button
                     type="button"
-                    onClick={() => onMoveFarmHere(pinpointLocation[0], normalizeLng(pinpointLocation[1]))}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onMoveFarmHere(pinpointLocation[0], normalizeLng(pinpointLocation[1]));
+                    }}
                     className="w-full mt-1 px-2.5 py-1 bg-[#4A5D43] hover:bg-[#3A4B34] text-white rounded-md text-[10px] font-bold transition shadow-xs cursor-pointer flex items-center justify-center gap-1"
                   >
                     <span>🎯 Teleport Map Here</span>

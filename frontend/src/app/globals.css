@@ -103,6 +103,42 @@ h1, h2, h3, h4, .font-serif {
   background-color: #FEFEFA !important;
 }
 
+/* Draggable Corner Vertex Marker Styling */
+.custom-vertex-icon {
+  background: transparent !important;
+  border: none !important;
+  cursor: grab !important;
+  user-select: none !important;
+  touch-action: none !important;
+  z-index: 1000 !important;
+}
+
+.custom-vertex-icon:active {
+  cursor: grabbing !important;
+}
+
+.custom-midpoint-icon {
+  background: transparent !important;
+  border: none !important;
+  cursor: pointer !important;
+  z-index: 999 !important;
+}
+
+.custom-pinpoint-icon {
+  background: transparent !important;
+  border: none !important;
+  cursor: grab !important;
+  z-index: 1001 !important;
+}
+
+.leaflet-marker-draggable {
+  cursor: grab !important;
+}
+
+.leaflet-marker-dragging {
+  cursor: grabbing !important;
+}
+
 /* Soft tactile shadows */
 .shadow-soft {
   box-shadow: 0 4px 20px -2px rgba(93, 112, 82, 0.08);
